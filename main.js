@@ -1,105 +1,106 @@
-const Discord = require('discord.js');
 const { Client, GatewayIntentBits } = require('discord.js');
-const token = require('./discord.json').token;
+const fs = require('fs');
+const sharp = require('sharp');
+const socketio = require('socket.io');
+const https = require('https');
 
-const client = new Client({ 
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildMessageReactions] 
+const token = require('./ignore/discord.json').token;
+const tokenRBG = require('./ignore/removebg.js').token;
+
+const client = new Client({
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildMessageReactions]
+});
+
+const io = socketio();
+
+io.on('connection', socket => {
+    console.log('Socket connected:', socket.id);
 });
 
 client.on('ready', async () => {
-    console.log(`Logged in as ${client.user.tag}!`);
-    const setupTasks = client.guilds.cache.map(async guild => {
-        const generalChannel = await findGeneralChannel(guild);
-        if (generalChannel) {
-            await managePinnedMessage(generalChannel);
-            return setupReactionCollector(generalChannel);
-        }
-    });
-    await Promise.all(setupTasks).then(() => {
-        console.log("All guilds have been set up.");
-    }).catch(error => {
-        console.error("An error occurred while setting up guilds:", error);
-    });
+	console.log('Bot is ready!');
 });
-async function findGeneralChannel(guild) {
-    const generalChannel = guild.channels.cache.find(channel => channel.name === "general");
-    if (!generalChannel) {
-        console.error(`General channel not found in guild: ${guild.name}`);
-        return null;
-    }
-    return generalChannel;
-}
-async function managePinnedMessage(channel) {
-    const pinnedMessages = await channel.messages.fetchPinned();
-    const botMessage = pinnedMessages.find(msg => msg.author.id === client.user.id);
 
-    if (botMessage) {
-        await botMessage.unpin();
-        await botMessage.delete();
-    }
+client.on('messageReactionAdd', async (reaction, user) => {
+    console.log(reaction,user);
+    if (!reaction.message.guild) return;
+    let member = reaction.message.guild.members.cache.get(user.id);
+    if (!member.permissions.has("ADMINISTRATOR")) return;
+	
+    if (reaction.emoji.name === 'rainbow' || reaction.emoji.name === 'lsd') {
+        const imageAttachment = reaction.message.attachments.find(attachment => attachment.url && (attachment.url.endsWith('.png') || attachment.url.endsWith('.jpg') || attachment.url.endsWith('.jpeg')));
+        
+        if (imageAttachment) {
+            const imageUrl = imageAttachment.url;
+            const imageName = imageAttachment.name;
+            const imagePath = `./public/imglib/${imageName}`;
+            const miniImagePath = `./public/mini/${imageName}`;
 
-    const newMessage = await channel.send('React to this message to get your roles!');
-    await newMessage.pin();
-}
-async function setupReactionCollector(channel) {
-    const message = await getLatestPinnedMessage(channel);
-    const collector = message.createReactionCollector();
-    collector.on('collect', async (reaction, user) => {
-        if (user.bot) return;
-		const guild = reaction.message.guild;
-		const member = await guild.members.fetch(user.id).catch(err => {
-			console.error(`Error fetching member: ${err}`);
-			return null;
-		});
-		if (!member) return;
-        let roleName = reaction.emoji.id ? `${reaction.emoji.name}:${reaction.emoji.id}` : reaction.emoji.name;
-        let role = guild.roles.cache.find(r => r.name === roleName);
-        const randomColor = Math.floor(Math.random() * 16777215).toString(16);
-        if (!role) {
-			try {
-				role = await guild.roles.create({
-					name: roleName,
-					color: randomColor,
-					reason: `we needed a role for ${roleName}`,
-				});
-			} catch (err) {
-				console.error(`Error creating role: ${err}`);
-				return;
-			}
-		}
-        await member.roles.add(role);
-        const memberRole = guild.roles.cache.find(r => r.name === 'member');
-        if (memberRole && !member.roles.cache.has(memberRole.id)) {
-            await member.roles.add(memberRole);
+            https.get(imageUrl, (res) => {
+                const path = fs.createWriteStream(imagePath);
+                res.pipe(path);
+                path.on('finish', () => {
+                    path.close();
+                    processImage(reaction.emoji.name, imagePath, miniImagePath);
+                });
+            }).on('error', (err) => {
+                console.error('Image download error:', err);
+            });
         }
+    }
+});
+
+async function removeBgFromImage(imagePath) {
+    const data = JSON.stringify({
+        image_file_b64: Buffer.from(await fs.promises.readFile(imagePath)).toString('base64'),
+        size: 'auto'
     });
 
-    collector.on('remove', async (reaction, user) => {
-		if (user.bot) return;
-		const guild = reaction.message.guild;
-		const member = await guild.members.fetch(user.id).catch(err => {
-			console.error(`Error fetching member: ${err}`);
-			return null;
-		});
-		if (!member) return;
-		console.log(reaction.emoji,member);
-		let roleName = reaction.emoji.id ? `${reaction.emoji.name}:${reaction.emoji.id}` : reaction.emoji.name;
-		const role = guild.roles.cache.find(r => r.name === roleName);
-		if (role && member.roles.cache.has(role.id)) {
-			console.log(`Attempting to remove role ${role.name} from user ${member.user.tag}`);
-			try {
-				await member.roles.remove(role);
-				console.log(`Role ${role.name} removed from user ${member.user.tag}`);
-			} catch (err) {
-				console.error(`Error removing role: ${err}`);
-			}
-		}
-	});
+    const options = {
+        hostname: 'api.remove.bg',
+        path: '/v1.0/removebg',
+        method: 'POST',
+        headers: {
+            'X-Api-Key': tokenRBG,
+            'Content-Type': 'application/json',
+            'Content-Length': data.length
+        }
+    };
+
+    return new Promise((resolve, reject) => {
+        const req = https.request(options, res => {
+            let chunks = [];
+            res.on('data', d => chunks.push(d));
+            res.on('end', async () => {
+                const buffer = Buffer.concat(chunks);
+                if (res.statusCode === 200) {
+                    await fs.promises.writeFile(imagePath, buffer);
+                    resolve();
+                } else {
+                    reject('Error removing background');
+                }
+            });
+        });
+        req.on('error', error => reject('Request error:', error));
+        req.write(data);
+        req.end();
+    });
 }
 
-async function getLatestPinnedMessage(channel) {
-    const pinnedMessages = await channel.messages.fetchPinned();
-    return pinnedMessages.first();
+async function processImage(emojiName, imagePath, miniImagePath) {
+    if (emojiName === 'rainbow') {
+        await minifyImage(imagePath, miniImagePath);
+    } else if (emojiName === 'lsd') {
+        await removeBgFromImage(imagePath);
+        await minifyImage(imagePath, miniImagePath);
+    }
+    io.emit('image:new', { path: miniImagePath });
+}
+
+async function minifyImage(inputPath, outputPath) {
+    await sharp(inputPath)
+        .resize({ width: 300 })
+        .toFile(outputPath);
 }
 
 client.login(token);
