@@ -8,8 +8,15 @@ const token = require('./ignore/discord.json').token;
 const tokenRBG = require('./ignore/removebg.js').token;
 
 const client = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildMessageReactions]
+	partials: ['MESSAGE', 'CHANNEL', 'REACTION'],
+    intents: [
+		GatewayIntentBits.GuildMessageReactions, 
+		GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent]
 });
+
+
 
 const io = socketio();
 
@@ -22,33 +29,42 @@ client.on('ready', async () => {
 });
 
 client.on('messageReactionAdd', async (reaction, user) => {
-    console.log(reaction,user);
+	if (!reaction.emoji.id) {
+		reaction.emoji.id = reaction.emoji.toString().codePointAt(0).toString(16);
+	}
+	if (reaction.message.partial) await reaction.message.fetch();
     if (!reaction.message.guild) return;
     let member = reaction.message.guild.members.cache.get(user.id);
     if (!member.permissions.has("ADMINISTRATOR")) return;
-	
-    if (reaction.emoji.name === 'rainbow' || reaction.emoji.name === 'lsd') {
-        const imageAttachment = reaction.message.attachments.find(attachment => attachment.url && (attachment.url.endsWith('.png') || attachment.url.endsWith('.jpg') || attachment.url.endsWith('.jpeg')));
-        
-        if (imageAttachment) {
-            const imageUrl = imageAttachment.url;
-            const imageName = imageAttachment.name;
-            const imagePath = `./public/imglib/${imageName}`;
-            const miniImagePath = `./public/mini/${imageName}`;
+    
+	let messageToInspect = reaction.message;
 
-            https.get(imageUrl, (res) => {
-                const path = fs.createWriteStream(imagePath);
-                res.pipe(path);
-                path.on('finish', () => {
-                    path.close();
-                    processImage(reaction.emoji.name, imagePath, miniImagePath);
-                });
-            }).on('error', (err) => {
-                console.error('Image download error:', err);
+
+    let imageUrl, imageName, image;
+
+	image = reaction.message.attachments.map(attachment => attachment.toJSON())[0];
+	imageUrl = image.attachment;
+	imageName = image.name;
+	
+    if (imageUrl) {
+        const imagePath = `./public/imglib/${imageName}`;
+        const miniImagePath = `./public/mini/${imageName}`;
+
+        https.get(imageUrl, (res) => {
+            const path = fs.createWriteStream(imagePath);
+            res.pipe(path);
+            path.on('finish', () => {
+                path.close();
+                processImage(reaction.emoji.id, imagePath, miniImagePath);
             });
-        }
+        }).on('error', (err) => {
+            console.error('Image download error:', err);
+        });
+    } else {
+        console.log('No image found in the message.');
     }
 });
+
 
 async function removeBgFromImage(imagePath) {
     const data = JSON.stringify({
@@ -88,10 +104,13 @@ async function removeBgFromImage(imagePath) {
 }
 
 async function processImage(emojiName, imagePath, miniImagePath) {
-    if (emojiName === 'rainbow') {
+    if (emojiName === '1f308') { //rainbow
         await minifyImage(imagePath, miniImagePath);
-    } else if (emojiName === 'lsd') {
+    } else if (emojiName === '730078728058568784') { //lsd
+		const tempPath = imagePath + '.temp';
         await removeBgFromImage(imagePath);
+        await sharp(imagePath).trim().toFile(tempPath);
+        fs.renameSync(tempPath, imagePath);
         await minifyImage(imagePath, miniImagePath);
     }
     io.emit('image:new', { path: miniImagePath });
