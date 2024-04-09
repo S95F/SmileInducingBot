@@ -3,7 +3,6 @@ const fs = require('fs');
 const sharp = require('sharp');
 const socketio = require('socket.io');
 const https = require('https');
-
 const token = require('./ignore/discord.json').token;
 const tokenRBG = require('./ignore/removebg.js').token;
 
@@ -66,59 +65,98 @@ client.on('messageReactionAdd', async (reaction, user) => {
 });
 
 
-async function removeBgFromImage(imagePath) {
-    const data = JSON.stringify({
-        image_file_b64: Buffer.from(await fs.promises.readFile(imagePath)).toString('base64'),
-        size: 'auto'
-    });
+//async function removeBgFromImage(imagePath) {
+    //try {
+        //// Load the pre-trained DeepLab model
+        //const model = await deeplab.load();
 
-    const options = {
-        hostname: 'api.remove.bg',
-        path: '/v1.0/removebg',
-        method: 'POST',
-        headers: {
-            'X-Api-Key': tokenRBG,
-            'Content-Type': 'application/json',
-            'Content-Length': data.length
-        }
-    };
+        //// Load the image
+        //const image = new Image();
+        //image.src = fs.readFileSync(imagePath);
+        //const inputCanvas = createCanvas(image.width, image.height);
+        //const ctx = inputCanvas.getContext('2d');
+        //ctx.drawImage(image, 0, 0);
 
-    return new Promise((resolve, reject) => {
-        const req = https.request(options, res => {
-            let chunks = [];
-            res.on('data', d => chunks.push(d));
-            res.on('end', async () => {
-                const buffer = Buffer.concat(chunks);
-                if (res.statusCode === 200) {
-                    await fs.promises.writeFile(imagePath, buffer);
-                    resolve();
-                } else {
-                    reject('Error removing background');
-                }
-            });
-        });
-        req.on('error', error => reject('Request error:', error));
-        req.write(data);
-        req.end();
-    });
+        //// Perform segmentation
+        //const predictions = await model.segment(inputCanvas);
+
+        //// Convert segmentation into a mask
+        //const outputCanvas = createCanvas(image.width, image.height);
+        //const outputCtx = outputCanvas.getContext('2d');
+        //const imageData = outputCtx.createImageData(image.width, image.height);
+        //const data = imageData.data;
+
+        //for (let i = 0; i < data.length; i += 4) {
+            //if (predictions.data[i / 4] === 0) { // Check if the pixel is background
+                //data[i] = 0;     // Set red channel to 0
+                //data[i + 1] = 0; // Set green channel to 0
+                //data[i + 2] = 0; // Set blue channel to 0
+                //data[i + 3] = 0; // Set alpha channel to 0 (transparent)
+            //} else {
+                //data[i + 3] = 255; // Set alpha channel to 255 (opaque)
+            //}
+        //}
+        //outputCtx.putImageData(imageData, 0, 0);
+
+        //// Save the output image
+        //const outputPath = './processedImage.png';
+        //const outStream = fs.createWriteStream(outputPath);
+        //const stream = outputCanvas.createPNGStream();
+        //stream.pipe(outStream);
+        //await new Promise(resolve => outStream.on('finish', resolve));
+
+        //console.log('Background removal completed.');
+        //return outputPath;
+    //} catch (error) {
+        //console.error('Error in removing background:', error);
+    //}
 }
-
 async function processImage(emojiName, imagePath, miniImagePath) {
-    if (emojiName === '1f308') { //rainbow
+    if (emojiName === '1f308') { // Rainbow emoji
         await minifyImage(imagePath, miniImagePath);
-    } else if (emojiName === '730078728058568784') { //lsd
-		const tempPath = imagePath + '.temp';
+    } else if (emojiName === '730078728058568784') { // LSD emoji
         await removeBgFromImage(imagePath);
-        await sharp(imagePath).trim().toFile(tempPath);
-        fs.renameSync(tempPath, imagePath);
+
+        const imageWithAlpha = sharp(imagePath);
+        const metadata = await imageWithAlpha.metadata();
+
+        if (metadata.channels === 4) {
+            const alphaChannel = await imageWithAlpha.extractChannel(3).toBuffer();
+			let invertedAlphaChannel = Buffer.from(alphaChannel).map(value => 255 - value);
+
+			// Create an image from the original and apply the inverted alpha channel as a mask
+			const imageBuffer = await sharp(imagePath).raw().toBuffer();
+			const maskedImageBuffer = Buffer.concat([imageBuffer.slice(0, metadata.width * metadata.height * 3), invertedAlphaChannel]);
+
+			// Create a new image using the masked buffer
+			await sharp(maskedImageBuffer, {
+				raw: {
+					width: metadata.width,
+					height: metadata.height,
+					channels: 4
+				}
+			})
+			.png()
+			.toFile(imagePath);
+        }
+
         await minifyImage(imagePath, miniImagePath);
     }
     io.emit('image:new', { path: miniImagePath });
 }
 
+
 async function minifyImage(inputPath, outputPath) {
+    // Determine the minified size while maintaining aspect ratio
+    const image = sharp(inputPath);
+    const metadata = await image.metadata();
+
+    const scaleFactor = 300 / Math.max(metadata.width, metadata.height);
+    const minifiedWidth = Math.round(metadata.width * scaleFactor);
+    const minifiedHeight = Math.round(metadata.height * scaleFactor);
+
     await sharp(inputPath)
-        .resize({ width: 300 })
+        .resize(minifiedWidth, minifiedHeight) // Resize with new dimensions
         .toFile(outputPath);
 }
 
